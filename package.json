@@ -1,0 +1,89 @@
+{
+  "name": "syntax-sensei",
+  "displayName": "Syntax-Sensei",
+  "description": "Offline-first AI coding mentor and programming academy — Phase 1 foundation",
+  "version": "0.1.1",
+  "publisher": "nobelesse",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "main": "./dist/extension/extension.js",
+  "activationEvents": [
+    "onView:syntaxSensei.sidebar",
+    "onCommand:syntaxSensei.openDashboard",
+    "onCommand:syntaxSensei.checkConnection"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "syntaxSensei.openDashboard",
+        "title": "Syntax-Sensei: Open Learning Dashboard",
+        "category": "Syntax-Sensei"
+      },
+      {
+        "command": "syntaxSensei.checkConnection",
+        "title": "Syntax-Sensei: Check Backend Connection",
+        "category": "Syntax-Sensei"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "syntaxSensei",
+          "title": "Syntax-Sensei",
+          "icon": "media/sensei.svg"
+        }
+      ]
+    },
+    "views": {
+      "syntaxSensei": [
+        {
+          "type": "webview",
+          "id": "syntaxSensei.sidebar",
+          "name": "Learning Workspace"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Syntax-Sensei",
+      "properties": {
+        "syntaxSensei.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the Python interpreter containing FastAPI and Uvicorn. Leave empty to use the project .venv."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:extension": "tsc -p tsconfig.extension.json",
+    "check:webview": "tsc -p tsconfig.webview.json",
+    "build:webview": "vite build",
+    "build": "npm run build:extension && npm run check:webview && npm run build:webview",
+    "test:webview": "vitest run",
+    "test": "npm run check:webview && npm run test:webview",
+    "watch:extension": "tsc -p tsconfig.extension.json -w",
+    "package:vsix": "npm run build && vsce package"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.4",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "@types/vscode": "1.96.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "@vscode/vsce": "3.3.2",
+    "typescript": "5.7.3",
+    "vite": "6.4.6",
+    "vitest": "3.2.4"
+  }
+}

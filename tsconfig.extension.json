@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "CommonJS", "moduleResolution": "Node",
+    "lib": ["ES2022"], "rootDir": "src/extension", "outDir": "dist/extension",
+    "strict": true, "esModuleInterop": true, "skipLibCheck": true,
+    "sourceMap": true, "types": ["node", "vscode"], "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/extension/**/*.ts"]
+}
