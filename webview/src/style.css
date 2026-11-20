@@ -57,3 +57,20 @@ h1 {font-size:clamp(27px,3.3vw,43px);line-height:1.16;letter-spacing:-1.8px;marg
 .ai-pending{display:flex;align-items:center;gap:10px;color:#a99fff;font-size:11px;margin-top:20px;line-height:1.5;}.ai-pending .spinner{height:19px;width:19px;flex:none;border-width:2px;margin:0;}
 @media(max-width:1100px){.ai-panel{grid-template-columns:1fr;}.ai-conversation{min-height:240px;max-height:none;}}
 @media(max-width:500px){.ai-statusbar{flex-direction:column;align-items:stretch;}.ai-input-row{grid-template-columns:1fr;}.ai-form,.ai-conversation{padding:13px;}}
+
+/* Phase 2: compact question navigator, kept visible while messages scroll. */
+.ai-conversation { display:flex; flex-direction:column; height: min(790px, 78vh); max-height:790px; min-height:430px; overflow:hidden; }
+.ai-convo-head { flex:none; }
+.ai-jump-preview { flex:none; font-size:10.5px; color:#bdb4f6; padding:10px 0 3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:30px; }
+.ai-message-split { display:flex; min-height:0; flex:1; }
+.ai-message-list { flex:1; min-width:0; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding-right:7px; }
+.ai-question-map { display:flex; flex-direction:column; align-items:center; gap:3px; flex:0 0 34px; padding:4px 1px 7px 4px; border-left:1px solid #303b59; overflow-x:hidden; overflow-y:auto; scrollbar-width:thin; }
+.ai-map-caption { font-size:10px; line-height:17px; color:#a39bdb; font-weight:800; margin-bottom:2px; }
+.ai-map-tick { cursor:pointer; border:0; flex:0 0 18px; display:grid; place-items:center; padding:0; width:26px; min-height:18px; background:transparent; border-radius:5px; }
+.ai-map-line { display:block; width:13px; height:3px; border-radius:4px; background:#657494; transition:width .15s,background .15s; }
+.ai-map-tick:hover .ai-map-line,.ai-map-tick:focus-visible .ai-map-line { width:23px; background:#c7baff; }
+.ai-map-tick.active .ai-map-line { width:20px; background:#86d5cb; }
+.ai-map-tick:focus-visible { outline:2px solid #a595ff; outline-offset:1px; }
+.ai-message-list .ai-turn { scroll-margin-top:16px; }
+@media(max-width:1100px) { .ai-conversation { height:550px; max-height:78vh; min-height:340px; } }
+@media(max-width:500px) { .ai-question-map { flex-basis:30px; }.ai-jump-preview {font-size:10px;} }

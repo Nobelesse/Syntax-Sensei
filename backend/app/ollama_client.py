@@ -11,6 +11,8 @@ import json
 import socket
 from typing import Any
 
+from .teaching_guides import ensure_operator_coverage, wants_python_operator_overview
+
 HOST = "127.0.0.1"
 PORT = 11434
 MAX_BODY_BYTES = 2_000_000
@@ -88,7 +90,16 @@ def status() -> dict[str, Any]:
 
 
 SYSTEM_INSTRUCTIONS = {
-    "chat": "Answer programming questions accurately in beginner-friendly language. Give short examples when useful.",
+    "chat": (
+        "Teach the requested programming topic like a careful instructor. Start with a direct definition, "
+        "then explain why it matters, syntax, ALL major recognized categories or variants, "
+        "how each works, small commented code examples and their expected results, practical use cases, "
+        "common mistakes and edge cases, connections to relevant language concepts, and a short recap "
+        "with 2-3 review questions. Explain beginner concepts in simple language before jargon. "
+        "Do not arbitrarily limit an overview to 3 or 4 types when more standard types exist. "
+        "If the user asks a narrow question, focus on that question rather than a full course. "
+        "Clearly distinguish verified facts from uncertain suggestions. Prefer thoroughness over brevity."
+    ),
     "explain": "Explain the provided code step by step. Clarify syntax, inputs, outputs and any assumptions. Do not claim you ran it.",
     "debug": "Review the provided code for possible bugs. Distinguish confirmed issues from hypotheses, give reasoning and proposed corrections. Do not claim to have executed the code.",
     "hint": "Act as a Socratic programming tutor. Give small progressive hints; do not reveal the full solution unless specifically requested.",
@@ -115,9 +126,18 @@ def chat(
     system = (
         "You are Syntax-Sensei, a helpful offline coding mentor. "
         "Never claim to have accessed files, executed programs, searched online, or verified outputs. "
-        "Use clear, structured explanations and acknowledge uncertainty. "
+        "Use clear Markdown headings, lists, tables when helpful, and fenced code blocks with language labels. "
+        "Answer accurately and acknowledge uncertainty; do not claim to cover literally everything. "
         + SYSTEM_INSTRUCTIONS[mode]
     )
+    if wants_python_operator_overview(prompt, language, mode):
+        system += (
+            "\nFor an overview of Python operator types, include ALL SEVEN conventional categories: "
+            "arithmetic, comparison (relational), assignment, logical, bitwise, membership, and identity. "
+            "Explain important distinctions: / vs //, = vs ==, and vs &, == vs is, "
+            "membership in collections, precedence, and the := assignment expression. "
+            "Provide examples rather than just a list."
+        )
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
     if mode == "chat":
         # History is a limited window from the current webview session only.
@@ -133,7 +153,7 @@ def chat(
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": 0.25, "num_ctx": 2048, "num_predict": 600},
+            "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 700 if mode == "hint" else 1700},
             "keep_alive": "2m",
         },
         timeout=180,
@@ -142,4 +162,4 @@ def chat(
     answer = message.get("content") if isinstance(message, dict) else None
     if not isinstance(answer, str) or not answer.strip():
         raise OllamaError("The model returned an empty response. Try again or choose another model.")
-    return {"model": model, "mode": mode, "reply": answer.strip()}
+    return {"model": model, "mode": mode, "reply": ensure_operator_coverage(answer.strip(), prompt, language, mode)}

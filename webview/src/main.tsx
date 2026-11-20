@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import MarkdownAnswer from './MarkdownAnswer';
+import { buildQuestionIndex } from './questionNavigator';
 import { completionPercentage, isLessonComplete, type Bootstrap, type Progress, type Lesson } from './progress';
 import './style.css';
 import './answer-styles.css';
@@ -48,6 +49,19 @@ function App() {
   const [aiTurns, setAiTurns] = useState<AiTurn[]>([]);
   const pendingAi = useRef<{ id: string; turn: AiTurn } | null>(null);
   const requestCounter = useRef(0);
+  const conversationListRef = useRef<HTMLDivElement>(null);
+  const [previewQuestion, setPreviewQuestion] = useState('');
+  const [activeQuestionIndex, setActiveQuestionIndex] = useState<number | null>(null);
+  const questionIndex = buildQuestionIndex(aiTurns);
+
+  function jumpToQuestion(index: number) {
+    const list = conversationListRef.current;
+    const target = list?.querySelector<HTMLElement>(`[data-ai-question-index="${index}"]`);
+    if (!list || !target) return;
+    const top = target.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 12;
+    list.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    setActiveQuestionIndex(index);
+  }
 
   function refreshModels() {
     setAiError('');
@@ -199,14 +213,36 @@ function App() {
                 <textarea id="ai-code" className="ai-textarea ai-code" maxLength={12000} rows={6} value={aiCode} onChange={e => setAiCode(e.target.value)} disabled={aiBusy} placeholder="Paste a small code sample here..." spellCheck={false}/>
                 <label className="ai-label ai-language" htmlFor="ai-language">Programming language (optional)<input id="ai-language" maxLength={60} value={aiLanguage} onChange={e => setAiLanguage(e.target.value)} disabled={aiBusy} placeholder="Python, Java, C++, R..." /></label>
                 {aiError && <div className="ai-error" role="alert"><strong>AI request issue</strong><p>{aiError}</p></div>}
-                <div className="ai-actions"><button className="primary" disabled={aiBusy || !aiStatus?.online || !aiModel} onClick={sendToSensei}>{aiBusy ? 'Thinking locally...' : 'Ask Sensei →'}</button><button className="secondary" disabled={aiBusy || !aiTurns.length} onClick={() => setAiTurns([])}>Clear chat</button></div>
+                <div className="ai-actions"><button className="primary" disabled={aiBusy || !aiStatus?.online || !aiModel} onClick={sendToSensei}>{aiBusy ? 'Thinking locally...' : 'Ask Sensei →'}</button><button className="secondary" disabled={aiBusy || !aiTurns.length} onClick={() => { setAiTurns([]); setPreviewQuestion(''); setActiveQuestionIndex(null); }}>Clear chat</button></div>
                 <p className="ai-note">Review selected code before sending. Do not include passwords or secrets. No files are read automatically. AI answers can be wrong; code is not executed. First responses may take time on an 8 GB PC.</p>
               </div>
-              <div className="ai-conversation" aria-live="polite">
-                <div className="ai-convo-head"><strong>Conversation</strong><small>In-memory only · Cleared on reload</small></div>
-                {!aiTurns.length && <div className="ai-empty"><div>✦</div><h3>Your coding mentor is ready.</h3><p>Select a local model, choose a mode and ask your first question. No cloud account or API key is needed.</p></div>}
-                {aiTurns.map((turn, index) => <article className={`ai-turn ${turn.role}`} key={index}><div className="ai-turn-top"><strong>{turn.role === 'user' ? 'You' : 'Syntax-Sensei'}</strong><small>{turn.role === 'user' ? aiModes.find(m => m.value === turn.mode)?.label : turn.model}</small></div>{turn.role === 'assistant' ? <MarkdownAnswer content={turn.content} /> : <div className="ai-user-text">{turn.content}</div>}</article>)}
-                {aiBusy && <div className="ai-pending"><div className="spinner"></div> Local model is generating a response. This can take longer on the first request.</div>}
+              <div className="ai-conversation">
+                <div className="ai-convo-head"><strong>Conversation</strong><small>Session only · Questions at right</small></div>
+                {questionIndex.length > 0 && <div className="ai-jump-preview" title={previewQuestion || 'Hover over a question line to preview it'}>
+                  {previewQuestion || `Question map · ${questionIndex.length} question${questionIndex.length === 1 ? '' : 's'} · hover a line, click to jump`}
+                </div>}
+                <div className="ai-message-split">
+                  <div className="ai-message-list" ref={conversationListRef} aria-label="AI conversation" aria-live="polite">
+                    {!aiTurns.length && <div className="ai-empty"><div>✦</div><h3>Your coding mentor is ready.</h3><p>Select a local model, choose a mode and ask your first question. No cloud account or API key is needed.</p></div>}
+                    {aiTurns.map((turn, index) => <article className={`ai-turn ${turn.role}`} data-ai-question-index={turn.role === 'user' ? index : undefined} key={index}><div className="ai-turn-top"><strong>{turn.role === 'user' ? 'You' : 'Syntax-Sensei'}</strong><small>{turn.role === 'user' ? aiModes.find(m => m.value === turn.mode)?.label : turn.model}</small></div>{turn.role === 'assistant' ? <MarkdownAnswer content={turn.content} /> : <div className="ai-user-text">{turn.content}</div>}</article>)}
+                    {aiBusy && <div className="ai-pending"><div className="spinner"></div> Local model is generating a response. This can take longer on the first request.</div>}
+                  </div>
+                  {questionIndex.length > 0 && <nav className="ai-question-map" aria-label="Jump to earlier questions">
+                    <span className="ai-map-caption" aria-hidden="true">Q</span>
+                    {questionIndex.map(entry => <button key={entry.turnIndex} type="button"
+                      className={`ai-map-tick ${activeQuestionIndex === entry.turnIndex ? 'active' : ''}`}
+                      aria-label={`Jump to question ${entry.number}: ${entry.preview}`}
+                      aria-current={activeQuestionIndex === entry.turnIndex ? 'location' : undefined}
+                      title={`Question ${entry.number}: ${entry.preview}`}
+                      onMouseEnter={() => setPreviewQuestion(`Q${entry.number} · ${entry.preview}`)}
+                      onMouseLeave={() => setPreviewQuestion('')}
+                      onFocus={() => setPreviewQuestion(`Q${entry.number} · ${entry.preview}`)}
+                      onBlur={() => setPreviewQuestion('')}
+                      onClick={() => jumpToQuestion(entry.turnIndex)}>
+                        <span className="ai-map-line" aria-hidden="true" />
+                      </button>)}
+                  </nav>}
+                </div>
               </div>
             </div>
           </>}
