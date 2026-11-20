@@ -8,6 +8,7 @@ import './answer-styles.css';
 
 type Page = 'dashboard' | 'ai' | 'learn' | 'progress' | 'roadmap';
 type AiMode = 'chat' | 'explain' | 'debug' | 'hint';
+type AiDepth = 'quick' | 'balanced' | 'detailed';
 type AiStatus = { online: boolean; models: string[]; preferred_model: string | null; message: string };
 type AiTurn = { role: 'user' | 'assistant'; content: string; mode: AiMode; model?: string };
 const aiModes: {value: AiMode; label: string; description: string}[] = [
@@ -46,6 +47,12 @@ function App() {
   const [aiCode, setAiCode] = useState('');
   const [aiLanguage, setAiLanguage] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiDepth, setAiDepth] = useState<AiDepth>('balanced');
+  const [streamPreview, setStreamPreview] = useState('');
+  const streamTextRef = useRef('');
+  const [warmupNotice, setWarmupNotice] = useState('');
+  const warmupSent = useRef(new Set<string>());
+  const currentModel = useRef('');
   const [aiTurns, setAiTurns] = useState<AiTurn[]>([]);
   const pendingAi = useRef<{ id: string; turn: AiTurn } | null>(null);
   const requestCounter = useRef(0);
@@ -53,6 +60,14 @@ function App() {
   const [previewQuestion, setPreviewQuestion] = useState('');
   const [activeQuestionIndex, setActiveQuestionIndex] = useState<number | null>(null);
   const questionIndex = buildQuestionIndex(aiTurns);
+  currentModel.current = aiModel;
+
+  useEffect(() => {
+    if (page !== 'ai' || !aiStatus?.online || !aiModel || warmupSent.current.has(aiModel)) return;
+    warmupSent.current.add(aiModel);
+    setWarmupNotice('Preparing selected model in the background while you type…');
+    vsCode?.postMessage({ type: 'aiWarmup', model: aiModel });
+  }, [page, aiStatus?.online, aiModel]);
 
   function jumpToQuestion(index: number) {
     const list = conversationListRef.current;
@@ -80,10 +95,12 @@ function App() {
     const turn: AiTurn = { role: 'user', content: code ? `${prompt || aiMode}\n\n${code}` : prompt, mode: aiMode };
     pendingAi.current = { id, turn };
     setAiBusy(true);
+    streamTextRef.current = '';
+    setStreamPreview('');
     setAiError('');
     const history = aiMode === 'chat' ? aiTurns.slice(-8).map(t => ({role: t.role, content: t.content.slice(0, 3000)})) : [];
-    vsCode?.postMessage({ type: 'aiChat', requestId: id,
-      payload: { model: aiModel, mode: aiMode, prompt, code, language: aiLanguage.trim(), history } });
+    vsCode?.postMessage({ type: 'aiChatStream', requestId: id,
+      payload: { model: aiModel, mode: aiMode, prompt, code, language: aiLanguage.trim(), history, depth: aiDepth } });
   }
 
   function reload() {
@@ -111,18 +128,40 @@ function App() {
         setAiStatus(status);
         setAiModel(previous => status.models.includes(previous) ? previous : (status.preferred_model ?? ''));
         if (status.online) setAiError('');
+      } else if (message.type === 'aiWarmup') {
+        const data = message.data as { model?: string; state?: string };
+        if (data.model === currentModel.current && data.state === 'ready') {
+          setWarmupNotice('Selected model is prepared for faster follow-up answers.');
+        }
+      } else if (message.type === 'aiWarmupError') {
+        setWarmupNotice('Automatic model preparation was unavailable; you can still use Ask Sensei.');
+      } else if (message.type === 'aiChunk') {
+        if (!pendingAi.current || pendingAi.current.id !== message.requestId) return;
+        if (typeof message.text !== 'string') return;
+        streamTextRef.current += message.text;
+        setStreamPreview(streamTextRef.current);
       } else if (message.type === 'aiResponse') {
         const request = pendingAi.current;
         if (!request || request.id !== message.requestId) return;
         const data = message.data as { reply: string; model: string; mode: AiMode };
         pendingAi.current = null;
+        streamTextRef.current = '';
+        setStreamPreview('');
         setAiTurns(previous => [...previous, request.turn,
           { role: 'assistant', content: data.reply, model: data.model, mode: data.mode }]);
         setAiBusy(false);
         setAiPrompt('');
       } else if (message.type === 'aiError') {
         if (message.requestId && message.requestId !== pendingAi.current?.id) return;
+        const request = pendingAi.current;
+        if (request && streamTextRef.current.trim()) {
+          const partial = streamTextRef.current.trim() + '\n\n*This reply was interrupted before completion.*';
+          setAiTurns(previous => [...previous, request.turn,
+            { role: 'assistant', content: partial, model: 'Interrupted local response', mode: request.turn.mode }]);
+        }
         pendingAi.current = null;
+        streamTextRef.current = '';
+        setStreamPreview('');
         setAiBusy(false);
         setAiError(String(message.message || 'The local AI request failed.'));
       } else if (message.type === 'editorSelection') {
@@ -200,12 +239,20 @@ function App() {
               <div><span className={aiStatus?.online ? 'ai-dot ai-connected' : 'ai-dot'}></span><strong>{!aiStatus ? 'Checking Ollama...' : aiStatus.online ? 'Ollama connected locally' : 'Ollama disconnected'}</strong><small>{aiStatus?.message ?? 'Reading installed models from 127.0.0.1:11434...'}</small></div>
               <button className="secondary ai-refresh" onClick={refreshModels}>↻ Refresh models</button>
             </section>
+            {warmupNotice && <p className="ai-warmup-note" role="status">{warmupNotice}</p>}
             <div className="ai-panel">
               <div className="ai-form">
                 <div className="ai-input-row">
                   <label className="ai-label">Installed model<select aria-label="Installed Ollama model" value={aiModel} onChange={e => setAiModel(e.target.value)} disabled={aiBusy || !aiStatus?.online || !aiStatus.models.length}><option value="">{aiStatus?.models.length ? 'Choose a model' : 'No local models available'}</option>{(aiStatus?.models ?? []).map(m => <option key={m} value={m}>{m}</option>)}</select></label>
                   <label className="ai-label">Mode<select aria-label="AI assistance mode" value={aiMode} onChange={e => setAiMode(e.target.value as AiMode)} disabled={aiBusy}>{aiModes.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
                 </div>
+                <label className="ai-label ai-depth-label" htmlFor="ai-depth">Answer depth
+                  <select id="ai-depth" value={aiDepth} disabled={aiBusy} onChange={e => setAiDepth(e.target.value as AiDepth)}>
+                    <option value="quick">Quick — shorter, code example included</option>
+                    <option value="balanced">Balanced — recommended</option>
+                    <option value="detailed">Detailed — comprehensive, slower</option>
+                  </select>
+                </label>
                 <p className="ai-mode-help">{aiModes.find(m => m.value === aiMode)?.description}</p>
                 <label className="ai-label" htmlFor="ai-question">Your question</label>
                 <textarea id="ai-question" className="ai-textarea" maxLength={5000} rows={3} value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} disabled={aiBusy} placeholder={aiMode === 'chat' ? 'How do Python functions work?' : aiMode === 'hint' ? 'I am stuck writing a sorting algorithm...' : 'Explain what I should understand about this code...'} />
@@ -214,7 +261,7 @@ function App() {
                 <label className="ai-label ai-language" htmlFor="ai-language">Programming language (optional)<input id="ai-language" maxLength={60} value={aiLanguage} onChange={e => setAiLanguage(e.target.value)} disabled={aiBusy} placeholder="Python, Java, C++, R..." /></label>
                 {aiError && <div className="ai-error" role="alert"><strong>AI request issue</strong><p>{aiError}</p></div>}
                 <div className="ai-actions"><button className="primary" disabled={aiBusy || !aiStatus?.online || !aiModel} onClick={sendToSensei}>{aiBusy ? 'Thinking locally...' : 'Ask Sensei →'}</button><button className="secondary" disabled={aiBusy || !aiTurns.length} onClick={() => { setAiTurns([]); setPreviewQuestion(''); setActiveQuestionIndex(null); }}>Clear chat</button></div>
-                <p className="ai-note">Review selected code before sending. Do not include passwords or secrets. No files are read automatically. AI answers can be wrong; code is not executed. First responses may take time on an 8 GB PC.</p>
+                <p className="ai-note">Review selected code before sending. Do not include passwords or secrets. No files are read automatically. AI answers can be wrong; code is not executed. Answers appear progressively as the local model generates them. Quick mode can finish sooner; detailed mode uses more tokens. First loading can still take time on an 8 GB PC.</p>
               </div>
               <div className="ai-conversation">
                 <div className="ai-convo-head"><strong>Conversation</strong><small>Session only · Questions at right</small></div>
@@ -225,7 +272,11 @@ function App() {
                   <div className="ai-message-list" ref={conversationListRef} aria-label="AI conversation" aria-live="polite">
                     {!aiTurns.length && <div className="ai-empty"><div>✦</div><h3>Your coding mentor is ready.</h3><p>Select a local model, choose a mode and ask your first question. No cloud account or API key is needed.</p></div>}
                     {aiTurns.map((turn, index) => <article className={`ai-turn ${turn.role}`} data-ai-question-index={turn.role === 'user' ? index : undefined} key={index}><div className="ai-turn-top"><strong>{turn.role === 'user' ? 'You' : 'Syntax-Sensei'}</strong><small>{turn.role === 'user' ? aiModes.find(m => m.value === turn.mode)?.label : turn.model}</small></div>{turn.role === 'assistant' ? <MarkdownAnswer content={turn.content} /> : <div className="ai-user-text">{turn.content}</div>}</article>)}
-                    {aiBusy && <div className="ai-pending"><div className="spinner"></div> Local model is generating a response. This can take longer on the first request.</div>}
+                    {aiBusy && <article className="ai-turn assistant ai-streaming" aria-label="AI response in progress">
+                      <div className="ai-turn-top"><strong>Syntax-Sensei</strong><small>Responding live · {aiDepth}</small></div>
+                      {streamPreview ? <MarkdownAnswer content={streamPreview} /> : <div className="ai-pending"><div className="spinner"></div> Preparing the first words locally…</div>}
+                      <div className="ai-streaming-footer"><span className="ai-streaming-dot" /> Generating locally — response is not complete</div>
+                    </article>}
                   </div>
                   {questionIndex.length > 0 && <nav className="ai-question-map" aria-label="Jump to earlier questions">
                     <span className="ai-map-caption" aria-hidden="true">Q</span>

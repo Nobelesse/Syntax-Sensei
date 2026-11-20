@@ -74,3 +74,11 @@ h1 {font-size:clamp(27px,3.3vw,43px);line-height:1.16;letter-spacing:-1.8px;marg
 .ai-message-list .ai-turn { scroll-margin-top:16px; }
 @media(max-width:1100px) { .ai-conversation { height:550px; max-height:78vh; min-height:340px; } }
 @media(max-width:500px) { .ai-question-map { flex-basis:30px; }.ai-jump-preview {font-size:10px;} }
+
+/* Phase 2 learning examples + first-answer responsiveness */
+.ai-warmup-note { color:#9ad8d1; background:#11242e; border:1px solid #2c5f66; border-radius:8px; padding:10px 13px; font-size:11px; line-height:1.6; margin:-6px 0 14px; }
+.ai-depth-label { margin:0 0 2px; }
+.ai-streaming { border-color:#7261a9; box-shadow:0 0 0 1px #685aa633; }
+.ai-streaming-footer { border-top:1px solid #313c5a; padding-top:10px; margin-top:12px; display:flex; align-items:center; gap:7px; color:#b6aafa; font-size:10px; }
+.ai-streaming-dot { width:7px;height:7px;background:#9c8aff;border-radius:50%;animation:streamPulse 1.2s infinite alternate; }
+@keyframes streamPulse { from {opacity:.3} to {opacity:1} }

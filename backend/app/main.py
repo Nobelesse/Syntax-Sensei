@@ -1,9 +1,11 @@
 """Syntax-Sensei Phase 2 local API: learning foundation plus offline Ollama."""
 
 from contextlib import asynccontextmanager
+import json
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import ollama_client
@@ -41,6 +43,7 @@ class AIChatRequest(BaseModel):
     code: str = Field(default="", max_length=12000)
     language: str = Field(default="", max_length=60)
     history: list[ChatTurn] = Field(default_factory=list, max_length=8)
+    depth: Literal["quick", "balanced", "detailed"] = "detailed"
 
 
 def progress_summary() -> dict:
@@ -96,6 +99,45 @@ def ai_chat(data: AIChatRequest) -> dict:
             code=data.code,
             language=data.language,
             history=[turn.model_dump() for turn in data.history],
+            depth=data.depth,
         )
     except ollama_client.OllamaError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
+
+class AIWarmupRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=120)
+
+
+@app.post("/api/ai/warmup")
+def ai_warmup(data: AIWarmupRequest) -> dict:
+    """Called asynchronously by the extension; does not send user prompts."""
+    try:
+        return ollama_client.warmup(data.model)
+    except ollama_client.OllamaError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
+
+@app.post("/api/ai/stream")
+def ai_stream(data: AIChatRequest):
+    """Forward local Ollama chunks as server-sent events to the trusted extension."""
+    try:
+        events = ollama_client.stream_chat(
+            model=data.model, mode=data.mode, prompt=data.prompt, code=data.code,
+            language=data.language, history=[turn.model_dump() for turn in data.history],
+            depth=data.depth,
+        )
+    except ollama_client.OllamaError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
+    def body():
+        try:
+            for event in events:
+                kind = event["type"]
+                payload = {k: v for k, v in event.items() if k != "type"}
+                yield "event: " + kind + "\ndata: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+        except ollama_client.OllamaError as error:
+            yield "event: error\ndata: " + json.dumps({"message": str(error)}) + "\n\n"
+
+    return StreamingResponse(body(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

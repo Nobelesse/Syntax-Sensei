@@ -1,7 +1,7 @@
 """Loopback-only Ollama adapter; no cloud service, auto-download, or code execution.
 
 The adapter connects directly to 127.0.0.1:11434 instead of accepting arbitrary URLs.
-Chat requests deliberately use non-streaming responses in Phase 2.
+Supports both the original non-streaming API and streaming token delivery.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import http.client
 import json
 import socket
-from typing import Any
+from typing import Any, Iterator
 
 from .teaching_guides import ensure_operator_coverage, wants_python_operator_overview
 
@@ -26,7 +26,7 @@ class OllamaError(Exception):
 
 
 def _request(path: str, payload: dict[str, Any] | None = None, timeout: int = 3) -> dict[str, Any]:
-    if path not in ("/api/tags", "/api/chat"):
+    if path not in ("/api/tags", "/api/chat", "/api/generate"):
         raise OllamaError("Unsupported Ollama API path", 400)
     connection = http.client.HTTPConnection(HOST, PORT, timeout=timeout)
     try:
@@ -89,6 +89,30 @@ def status() -> dict[str, Any]:
     }
 
 
+CODE_EXAMPLES_POLICY = (
+    "When the user is learning a programming concept, provide at least one practical, "
+    "complete fenced code example with the correct language label (python, java, c, cpp, r, javascript, etc.). "
+    "Use runnable, self-contained examples where practical: include necessary imports, classes, "
+    "entry points, and input values; no unexplained placeholders. Explain important lines in simple words. "
+    "Show the expected output in a separate text code fence and label it as expected, "
+    "not as output you executed. For a broad topic, demonstrate important categories with short "
+    "examples, not a giant program; avoid filler. For debugging, show a corrected snippet with "
+    "an explanation and expected behavior. For hint mode do NOT reveal a complete solution unless asked. "
+    "If code would be misleading or irrelevant (e.g. a conceptual policy question), say why. "
+)
+DEPTH_TOKENS = {"quick": 550, "balanced": 1150, "detailed": 1900}
+KEEP_ALIVE = "5m"  # Shorter retention is friendlier to 8 GB machines.
+
+
+def warmup(model: str) -> dict[str, str]:
+    """Preload a locally installed model with no user prompt, on a separate API request."""
+    if model not in installed_models():
+        raise OllamaError("Select an installed model before preparing it.", 400)
+    _request("/api/generate", {"model": model, "prompt": "", "stream": False,
+                               "keep_alive": KEEP_ALIVE}, timeout=120)
+    return {"model": model, "state": "ready"}
+
+
 SYSTEM_INSTRUCTIONS = {
     "chat": (
         "Teach the requested programming topic like a careful instructor. Start with a direct definition, "
@@ -106,19 +130,18 @@ SYSTEM_INSTRUCTIONS = {
 }
 
 
-def chat(
-    model: str,
-    mode: str,
-    prompt: str,
-    code: str,
-    language: str,
-    history: list[dict[str, str]],
-) -> dict[str, str]:
+def prepare_chat(
+    model: str, mode: str, prompt: str, code: str, language: str,
+    history: list[dict[str, str]], depth: str = "detailed",
+) -> dict[str, Any]:
+    """Shared prompt builder for streaming and legacy response routes."""
     models = installed_models()
     if model not in models:
-        raise OllamaError("Model isn't installed locally. Refresh the model list and select an installed model.", 400)
+        raise OllamaError("Model isn't installed locally. Refresh and select an installed model.", 400)
     if mode not in SYSTEM_INSTRUCTIONS:
         raise OllamaError("Unknown AI assistance mode.", 400)
+    if depth not in DEPTH_TOKENS:
+        raise OllamaError("Unknown answer-depth setting.", 400)
     if not prompt.strip() and not code.strip():
         raise OllamaError("Enter a question or code before asking Sensei.", 400)
     if mode in ("explain", "debug") and not code.strip():
@@ -127,39 +150,111 @@ def chat(
         "You are Syntax-Sensei, a helpful offline coding mentor. "
         "Never claim to have accessed files, executed programs, searched online, or verified outputs. "
         "Use clear Markdown headings, lists, tables when helpful, and fenced code blocks with language labels. "
-        "Answer accurately and acknowledge uncertainty; do not claim to cover literally everything. "
-        + SYSTEM_INSTRUCTIONS[mode]
+        "Answer accurately and acknowledge uncertainty; don't claim literal completeness. "
+        + SYSTEM_INSTRUCTIONS[mode] + " " + CODE_EXAMPLES_POLICY
     )
+    if depth == "quick":
+        system += "\nKeep the response focused: a concise explanation, one practical code example, expected output and a tip."
+    elif depth == "detailed":
+        system += "\nUse enough detail for independent study, with examples for major cases and related topics."
+    else:
+        system += "\nBe thorough but efficient: focus on essential explanations and useful runnable examples."
     if wants_python_operator_overview(prompt, language, mode):
         system += (
             "\nFor an overview of Python operator types, include ALL SEVEN conventional categories: "
             "arithmetic, comparison (relational), assignment, logical, bitwise, membership, and identity. "
-            "Explain important distinctions: / vs //, = vs ==, and vs &, == vs is, "
-            "membership in collections, precedence, and the := assignment expression. "
-            "Provide examples rather than just a list."
+            "Explain / vs //, = vs ==, and vs &, == vs is, precedence, and :=. "
+            "Include examples rather than only a list."
         )
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
     if mode == "chat":
-        # History is a limited window from the current webview session only.
         messages.extend(history[-8:])
-    text = (f"Language: {language or 'not specified'}\n\n" if language else "")
+    text = (f"Language: {language}\n\n" if language else "")
     if code.strip():
         text += f"CODE:\n```\n{code.strip()}\n```\n\n"
     text += f"QUESTION:\n{prompt.strip()}" if prompt.strip() else "Explain the code clearly."
     messages.append({"role": "user", "content": text})
-    response = _request(
-        "/api/chat",
-        {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 700 if mode == "hint" else 1700},
-            "keep_alive": "2m",
-        },
-        timeout=180,
-    )
+    budget = 400 if mode == "hint" else DEPTH_TOKENS[depth]
+    return {"model": model, "messages": messages, "stream": False,
+            "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": budget},
+            "keep_alive": KEEP_ALIVE}
+
+
+def chat(model: str, mode: str, prompt: str, code: str, language: str,
+         history: list[dict[str, str]], depth: str = "detailed") -> dict[str, str]:
+    """Legacy non-streaming route remains available for compatibility."""
+    payload = prepare_chat(model, mode, prompt, code, language, history, depth)
+    response = _request("/api/chat", payload, timeout=180)
     message = response.get("message")
     answer = message.get("content") if isinstance(message, dict) else None
     if not isinstance(answer, str) or not answer.strip():
         raise OllamaError("The model returned an empty response. Try again or choose another model.")
-    return {"model": model, "mode": mode, "reply": ensure_operator_coverage(answer.strip(), prompt, language, mode)}
+    return {"model": model, "mode": mode,
+            "reply": ensure_operator_coverage(answer.strip(), prompt, language, mode)}
+
+
+def _stream_ollama(payload: dict[str, Any]) -> Iterator[str]:
+    """Parse Ollama's newline-delimited JSON safely; never accept remote URLs."""
+    connection = http.client.HTTPConnection(HOST, PORT, timeout=180)
+    try:
+        raw_payload = json.dumps({**payload, "stream": True}).encode("utf-8")
+        connection.request("POST", "/api/chat", body=raw_payload,
+                           headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        if response.status >= 400:
+            if response.status == 404:
+                raise OllamaError("Model not found. Refresh installed models.", 404)
+            raise OllamaError(f"Local Ollama returned HTTP {response.status}.", 502)
+        total_bytes = 0
+        done = False
+        while True:
+            line = response.readline(MAX_BODY_BYTES + 1)
+            if not line:
+                break
+            total_bytes += len(line)
+            if total_bytes > MAX_BODY_BYTES:
+                raise OllamaError("Ollama streamed response exceeded size limit.", 502)
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise OllamaError("Ollama sent an invalid streaming response.") from exc
+            if not isinstance(event, dict):
+                raise OllamaError("Ollama sent invalid stream data.")
+            if event.get("error"):
+                raise OllamaError("Ollama generation failed: " + str(event["error"])[:200])
+            message = event.get("message")
+            text = message.get("content") if isinstance(message, dict) else None
+            if isinstance(text, str) and text:
+                yield text
+            if event.get("done") is True:
+                done = True
+                break
+        if not done:
+            raise OllamaError("Ollama ended the stream before completing its answer.")
+    except (ConnectionRefusedError, OSError) as exc:
+        if isinstance(exc, (socket.timeout, TimeoutError)):
+            raise OllamaError("Ollama response timed out. Use Quick mode or a smaller model.", 504) from exc
+        raise OllamaError("Ollama is unavailable on 127.0.0.1:11434.", 503) from exc
+    finally:
+        connection.close()
+
+
+def stream_chat(model: str, mode: str, prompt: str, code: str, language: str,
+                history: list[dict[str, str]], depth: str = "detailed") -> Iterator[dict[str, str]]:
+    """Validate before streaming begins; emit a complete final reply for the UI."""
+    payload = prepare_chat(model, mode, prompt, code, language, history, depth)
+
+    def generate() -> Iterator[dict[str, str]]:
+        answer_parts: list[str] = []
+        for token in _stream_ollama(payload):
+            answer_parts.append(token)
+            yield {"type": "chunk", "text": token}
+        answer = "".join(answer_parts).strip()
+        if not answer:
+            raise OllamaError("The model returned an empty response. Try again or choose another model.")
+        yield {"type": "done", "model": model, "mode": mode,
+               "reply": ensure_operator_coverage(answer, prompt, language, mode)}
+
+    return generate()

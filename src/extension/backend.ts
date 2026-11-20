@@ -186,6 +186,88 @@ export class BackendManager implements vscode.Disposable {
     return this.requestRaw('/api/ai/chat', 'POST', payload, 190000);
   }
 
+  async warmupModel(model: string): Promise<unknown> {
+    await this.ensureRunning();
+    return this.requestRaw('/api/ai/warmup', 'POST', { model }, 135000);
+  }
+
+  async aiChatStream(payload: object, onText: (text: string) => void): Promise<{ model: string; mode: string; reply: string }> {
+    await this.ensureRunning();
+    if (!this.port) throw new Error('Local backend is not running.');
+    const body = JSON.stringify(payload);
+    const port = this.port;
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      let received = false;
+      let failure: Error | undefined;
+      let result: { model: string; mode: string; reply: string } | undefined;
+      const endWithError = (error: Error) => {
+        if (finished) return;
+        finished = true;
+        reject(error);
+      };
+      const req = http.request({
+        hostname: '127.0.0.1', port, path: '/api/ai/stream', method: 'POST',
+        timeout: 190000,
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream',
+                   'Content-Length': Buffer.byteLength(body) }
+      }, response => {
+        response.setEncoding('utf8');
+        let buffer = '';
+        let total = 0;
+        let errorBody = '';
+        const badStatus = (response.statusCode ?? 500) >= 400;
+        response.on('data', (chunk: string) => {
+          if (finished) return;
+          total += Buffer.byteLength(chunk, 'utf8');
+          if (total > 2 * 1024 * 1024) {
+            endWithError(new Error('Local AI stream exceeded the maximum size.'));
+            req.destroy();
+            return;
+          }
+          if (badStatus) { errorBody += chunk; return; }
+          buffer += chunk.replace(/\r\n/g, '\n');
+          let split = buffer.indexOf('\n\n');
+          while (split >= 0) {
+            const frame = buffer.slice(0, split);
+            buffer = buffer.slice(split + 2);
+            const eventName = frame.match(/^event: (.+)$/m)?.[1];
+            const dataLine = frame.split('\n').filter(line => line.startsWith('data: ')).map(line => line.slice(6)).join('\n');
+            if (eventName && dataLine) {
+              try {
+                const data = JSON.parse(dataLine) as Record<string, unknown>;
+                if (eventName === 'chunk' && typeof data.text === 'string') {
+                  onText(data.text);
+                } else if (eventName === 'done' && typeof data.reply === 'string'
+                  && typeof data.model === 'string' && typeof data.mode === 'string') {
+                  received = true;
+                  result = { reply: data.reply, model: data.model, mode: data.mode };
+                } else if (eventName === 'error') {
+                  failure = new Error(typeof data.message === 'string' ? data.message : 'Local AI stream failed.');
+                }
+              } catch (error) {
+                failure = error instanceof Error ? error : new Error('Malformed local AI event.');
+              }
+            }
+            split = buffer.indexOf('\n\n');
+          }
+        });
+        response.on('end', () => {
+          if (finished) return;
+          if (badStatus) { endWithError(new Error(`Backend HTTP ${response.statusCode}: ${errorBody.slice(0, 400)}`)); return; }
+          if (failure) { endWithError(failure); return; }
+          if (!received || !result) { endWithError(new Error('AI stream ended without a completed answer.')); return; }
+          finished = true;
+          resolve(result);
+        });
+        response.on('error', endWithError);
+      });
+      req.on('error', endWithError);
+      req.on('timeout', () => req.destroy(new Error('Local AI response timed out. Try Quick mode.')));
+      req.end(body);
+    });
+  }
+
   async checkHealth(): Promise<unknown> {
     await this.ensureRunning();
     return this.requestRaw('/health', 'GET');

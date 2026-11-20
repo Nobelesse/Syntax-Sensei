@@ -9,6 +9,7 @@ interface WebviewRequest {
   completed?: boolean;
   requestId?: string;
   payload?: unknown;
+  model?: string;
 }
 
 interface EditorSelection {
@@ -99,6 +100,39 @@ export class SenseiPanel implements vscode.WebviewViewProvider {
       } else if (message.type === 'aiStatus') {
         const data = await this.backend.ollamaStatus();
         await webview.postMessage({ type: 'aiStatus', data });
+      } else if (message.type === 'aiWarmup') {
+        if (typeof message.model !== 'string' || message.model.length > 120) {
+          throw new Error('Invalid model selection for warm-up.');
+        }
+        const data = await this.backend.warmupModel(message.model);
+        await webview.postMessage({ type: 'aiWarmup', data });
+      } else if (message.type === 'aiChatStream') {
+        if (!message.payload || typeof message.payload !== 'object' || Array.isArray(message.payload)) {
+          throw new Error('Malformed streaming AI request.');
+        }
+        let pendingText = '';
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const flush = () => {
+          if (!pendingText) return;
+          const text = pendingText;
+          pendingText = '';
+          void webview.postMessage({ type: 'aiChunk', text, requestId });
+        };
+        try {
+          const data = await this.backend.aiChatStream(message.payload, text => {
+            pendingText += text;
+            if (!timer) {
+              timer = setTimeout(() => { timer = undefined; flush(); }, 100);
+            }
+          });
+          if (timer) clearTimeout(timer);
+          flush();
+          await webview.postMessage({ type: 'aiResponse', data, requestId });
+        } catch (error) {
+          if (timer) clearTimeout(timer);
+          flush();
+          throw error;
+        }
       } else if (message.type === 'aiChat') {
         if (!message.payload || typeof message.payload !== 'object' || Array.isArray(message.payload)) {
           throw new Error('Malformed AI request.');
@@ -110,7 +144,7 @@ export class SenseiPanel implements vscode.WebviewViewProvider {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const type = message.type === 'aiChat' || message.type === 'aiStatus' ? 'aiError' : 'error';
+      const type = ['aiChat', 'aiChatStream', 'aiStatus', 'aiWarmup'].includes(message.type ?? '') ? (message.type === 'aiWarmup' ? 'aiWarmupError' : 'aiError') : 'error';
       await webview.postMessage({ type, message: reason, requestId });
     }
   }
