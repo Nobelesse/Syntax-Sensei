@@ -1,9 +1,18 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { completionPercentage, isLessonComplete, type Bootstrap, type Progress, type Lesson } from './progress';
 import './style.css';
 
-type Page = 'dashboard' | 'learn' | 'progress' | 'roadmap';
+type Page = 'dashboard' | 'ai' | 'learn' | 'progress' | 'roadmap';
+type AiMode = 'chat' | 'explain' | 'debug' | 'hint';
+type AiStatus = { online: boolean; models: string[]; preferred_model: string | null; message: string };
+type AiTurn = { role: 'user' | 'assistant'; content: string; mode: AiMode; model?: string };
+const aiModes: {value: AiMode; label: string; description: string}[] = [
+  { value: 'chat', label: 'Ask Sensei', description: 'Programming questions and conceptual guidance' },
+  { value: 'explain', label: 'Explain Code', description: 'Understand pasted or selected code line by line' },
+  { value: 'debug', label: 'Find Possible Bugs', description: 'Identify likely problems and suggest corrections' },
+  { value: 'hint', label: 'Progressive Hints', description: 'Get a nudge before the complete solution' },
+];
 type VsCodeApi = { postMessage(message: object): void };
 
 declare global {
@@ -12,8 +21,7 @@ declare global {
 const vsCode = window.acquireVsCodeApi?.();
 
 const planned = [
-  { icon: '✦', title: 'AI Coding Assistant', desc: 'Private offline chat with your chosen Ollama model.', phase: 'Phase 2' },
-  { icon: '{ }', title: 'Explain & Debug', desc: 'Explain code and help investigate issues right inside VS Code.', phase: 'Phase 3' },
+  { icon: '{ }', title: 'Advanced Code Analysis', desc: 'Deeper project-wide diagnostics, refactoring and testing tools.', phase: 'Phase 3' },
   { icon: '⌘', title: 'Complete Language Courses', desc: 'Python, Java, C, C++, R and more — structured from beginner level.', phase: 'Phase 4' },
   { icon: '✓', title: 'Smart Quizzes', desc: 'Topic questions, explanations, scores and review.', phase: 'Phase 5' },
   { icon: '◈', title: 'Assessments', desc: 'Chapter exams and coding challenges.', phase: 'Phase 6' },
@@ -27,6 +35,40 @@ function App() {
   const [selected, setSelected] = useState('python-hello');
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiError, setAiError] = useState('');
+  const [aiModel, setAiModel] = useState('');
+  const [aiMode, setAiMode] = useState<AiMode>('chat');
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiCode, setAiCode] = useState('');
+  const [aiLanguage, setAiLanguage] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiTurns, setAiTurns] = useState<AiTurn[]>([]);
+  const pendingAi = useRef<{ id: string; turn: AiTurn } | null>(null);
+  const requestCounter = useRef(0);
+
+  function refreshModels() {
+    setAiError('');
+    vsCode?.postMessage({ type: 'aiStatus' });
+  }
+
+  function sendToSensei() {
+    if (pendingAi.current || !aiStatus?.online || !aiModel) return;
+    const prompt = aiPrompt.trim();
+    const code = aiCode.trim();
+    if (!prompt && !code) { setAiError('Enter a question or code first.'); return; }
+    if ((aiMode === 'explain' || aiMode === 'debug') && !code) {
+      setAiError('Paste or select code for Explain/Debug modes.'); return;
+    }
+    const id = `ai-${++requestCounter.current}`;
+    const turn: AiTurn = { role: 'user', content: code ? `${prompt || aiMode}\n\n${code}` : prompt, mode: aiMode };
+    pendingAi.current = { id, turn };
+    setAiBusy(true);
+    setAiError('');
+    const history = aiMode === 'chat' ? aiTurns.slice(-8).map(t => ({role: t.role, content: t.content.slice(0, 3000)})) : [];
+    vsCode?.postMessage({ type: 'aiChat', requestId: id,
+      payload: { model: aiModel, mode: aiMode, prompt, code, language: aiLanguage.trim(), history } });
+  }
 
   function reload() {
     setError('');
@@ -48,6 +90,34 @@ function App() {
         setProgress(payload.progress);
         setPending(null);
         setError('');
+      } else if (message.type === 'aiStatus') {
+        const status = message.data as AiStatus;
+        setAiStatus(status);
+        setAiModel(previous => status.models.includes(previous) ? previous : (status.preferred_model ?? ''));
+        if (status.online) setAiError('');
+      } else if (message.type === 'aiResponse') {
+        const request = pendingAi.current;
+        if (!request || request.id !== message.requestId) return;
+        const data = message.data as { reply: string; model: string; mode: AiMode };
+        pendingAi.current = null;
+        setAiTurns(previous => [...previous, request.turn,
+          { role: 'assistant', content: data.reply, model: data.model, mode: data.mode }]);
+        setAiBusy(false);
+        setAiPrompt('');
+      } else if (message.type === 'aiError') {
+        if (message.requestId && message.requestId !== pendingAi.current?.id) return;
+        pendingAi.current = null;
+        setAiBusy(false);
+        setAiError(String(message.message || 'The local AI request failed.'));
+      } else if (message.type === 'editorSelection') {
+        const selection = message.data as { code?: string; language?: string };
+        if (typeof selection.code === 'string') {
+          setAiCode(selection.code);
+          setAiLanguage(typeof selection.language === 'string' ? selection.language : '');
+          setAiMode('explain');
+          setPage('ai');
+          setAiError('');
+        }
       } else if (message.type === 'error') {
         setPending(null);
         setError(String(message.message || 'Unknown backend error'));
@@ -55,6 +125,7 @@ function App() {
     }
     window.addEventListener('message', handler);
     vsCode?.postMessage({ type: 'bootstrap' });
+    vsCode?.postMessage({ type: 'aiStatus' });
     return () => window.removeEventListener('message', handler);
   }, []);
 
@@ -71,18 +142,19 @@ function App() {
   return <div className="shell">
     <header className="topbar">
       <div className="brand"><span className="mark">&lt;/&gt;</span><div><strong>Syntax-Sensei</strong><small>Learn. Build. Level up.</small></div></div>
-      <span className="phase-chip">FOUNDATION · PHASE 01</span>
+      <span className="phase-chip">OFFLINE AI · PHASE 02</span>
     </header>
     <div className="workspace">
       <aside className="sidebar">
         <p className="section-label">WORKSPACE</p>
         <nav aria-label="Syntax-Sensei navigation">
           <button className={page === 'dashboard' ? 'active' : ''} onClick={() => setPage('dashboard')}><span>▦</span> Overview</button>
+          <button className={page === 'ai' ? 'active' : ''} onClick={() => setPage('ai')}><span>✦</span> AI Sensei</button>
           <button className={page === 'learn' ? 'active' : ''} onClick={() => setPage('learn')}><span>▤</span> Learn Python</button>
           <button className={page === 'progress' ? 'active' : ''} onClick={() => setPage('progress')}><span>◷</span> My Progress</button>
           <button className={page === 'roadmap' ? 'active' : ''} onClick={() => setPage('roadmap')}><span>♢</span> Roadmap</button>
         </nav>
-        <div className="sidebar-footer"><span className="signal"></span> Offline-first foundation <small>All progress stored locally</small></div>
+        <div className="sidebar-footer"><span className="signal"></span> Local Ollama + SQLite <small>No cloud AI service required</small></div>
       </aside>
       <main className="main">
         {error && <section className="error" role="alert"><strong>Connection or save error</strong><p>{error}</p><p>Check VS Code → View → Output → Syntax-Sensei.</p><button onClick={reload}>Retry connection</button></section>}
@@ -90,18 +162,51 @@ function App() {
           {page === 'dashboard' && <>
             <div className="eyebrow">WELCOME TO YOUR WORKSPACE</div>
             <h1>Meet your coding mentor<span className="dot">.</span></h1>
-            <p className="lead">A focused place to understand code, learn languages and build confidence. Your journey begins with a working local foundation.</p>
+            <p className="lead">A focused place to understand code, learn languages and build confidence. Your workspace now includes a local AI coding mentor while keeping all Phase 1 lessons and progress.</p>
             <div className="hero-panel">
-              <div><span className="kicker">YOUR FIRST MILESTONE</span><h2>Start with the fundamentals.</h2><p>Try three short Python preview lessons. Completion is saved in a real local SQLite database.</p><button className="primary" onClick={() => setPage('learn')}>Open learning preview <span>→</span></button></div>
+              <div><span className="kicker">YOUR FIRST MILESTONE</span><h2>Learn with an offline AI mentor.</h2><p>Ask about programming, explain code, or practice the Python preview lessons. Ollama inference stays on your computer.</p><button className="primary" onClick={() => setPage('learn')}>Open learning preview <span>→</span></button></div>
               <div className="big-code" aria-hidden="true"><span className="line-no">01</span> <span className="violet">def</span> learn():<br/><span className="line-no">02</span> &nbsp; <span className="green">return</span> <span className="yellow">"You got this!"</span><br/><span className="line-no">03</span> <span className="violet">print</span>(learn())</div>
             </div>
             <div className="stat-grid">
-              <div className="stat"><span>LESSONS COMPLETED</span><strong>{progress?.completed_count ?? 0}<em> / {progress?.total_lessons ?? 0}</em></strong><small>Phase 1 preview</small></div>
+              <div className="stat"><span>LESSONS COMPLETED</span><strong>{progress?.completed_count ?? 0}<em> / {progress?.total_lessons ?? 0}</em></strong><small>Learning preview</small></div>
               <div className="stat"><span>PREVIEW PROGRESS</span><strong>{percent}<em>%</em></strong><div className="meter"><div style={{ width: `${percent}%` }}/></div></div>
               <div className="stat"><span>BACKEND STATUS</span><strong className="online">● Connected</strong><small>FastAPI + SQLite · Local</small></div>
             </div>
-            <div className="section-heading"><h2>What we're building</h2><span>Upcoming phases</span></div>
+            <div className="section-heading"><h2>Get started</h2><span>Local AI + learning preview</span></div>
+            <button className="primary" onClick={() => setPage('ai')}>Open AI Sensei →</button>
             <div className="features">{planned.slice(0,4).map(f => <div className="feature" key={f.title}><div className="feature-icon">{f.icon}</div><strong>{f.title}</strong><p>{f.desc}</p><small>{f.phase} · Planned</small></div>)}</div>
+          </>}
+          {page === 'ai' && <>
+            <div className="eyebrow">LOCAL AI CODING MENTOR</div>
+            <h1>Ask Syntax-Sensei<span className="dot">.</span></h1>
+            <p className="lead">Chat about programming, explain your code, investigate possible bugs, or ask for a hint. Your prompts go only to the Ollama service running on this computer.</p>
+            <section className="ai-statusbar" aria-label="Ollama status">
+              <div><span className={aiStatus?.online ? 'ai-dot ai-connected' : 'ai-dot'}></span><strong>{!aiStatus ? 'Checking Ollama...' : aiStatus.online ? 'Ollama connected locally' : 'Ollama disconnected'}</strong><small>{aiStatus?.message ?? 'Reading installed models from 127.0.0.1:11434...'}</small></div>
+              <button className="secondary ai-refresh" onClick={refreshModels}>↻ Refresh models</button>
+            </section>
+            <div className="ai-panel">
+              <div className="ai-form">
+                <div className="ai-input-row">
+                  <label className="ai-label">Installed model<select aria-label="Installed Ollama model" value={aiModel} onChange={e => setAiModel(e.target.value)} disabled={aiBusy || !aiStatus?.online || !aiStatus.models.length}><option value="">{aiStatus?.models.length ? 'Choose a model' : 'No local models available'}</option>{(aiStatus?.models ?? []).map(m => <option key={m} value={m}>{m}</option>)}</select></label>
+                  <label className="ai-label">Mode<select aria-label="AI assistance mode" value={aiMode} onChange={e => setAiMode(e.target.value as AiMode)} disabled={aiBusy}>{aiModes.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
+                </div>
+                <p className="ai-mode-help">{aiModes.find(m => m.value === aiMode)?.description}</p>
+                <label className="ai-label" htmlFor="ai-question">Your question</label>
+                <textarea id="ai-question" className="ai-textarea" maxLength={5000} rows={3} value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} disabled={aiBusy} placeholder={aiMode === 'chat' ? 'How do Python functions work?' : aiMode === 'hint' ? 'I am stuck writing a sorting algorithm...' : 'Explain what I should understand about this code...'} />
+                <div className="ai-code-title"><label className="ai-label" htmlFor="ai-code">Code (optional for Chat/Hints)</label><small>Or select code in the editor and run “Syntax-Sensei: Explain Selected Code”</small></div>
+                <textarea id="ai-code" className="ai-textarea ai-code" maxLength={12000} rows={6} value={aiCode} onChange={e => setAiCode(e.target.value)} disabled={aiBusy} placeholder="Paste a small code sample here..." spellCheck={false}/>
+                <label className="ai-label ai-language" htmlFor="ai-language">Programming language (optional)<input id="ai-language" maxLength={60} value={aiLanguage} onChange={e => setAiLanguage(e.target.value)} disabled={aiBusy} placeholder="Python, Java, C++, R..." /></label>
+                {aiError && <div className="ai-error" role="alert"><strong>AI request issue</strong><p>{aiError}</p></div>}
+                <div className="ai-actions"><button className="primary" disabled={aiBusy || !aiStatus?.online || !aiModel} onClick={sendToSensei}>{aiBusy ? 'Thinking locally...' : 'Ask Sensei →'}</button><button className="secondary" disabled={aiBusy || !aiTurns.length} onClick={() => setAiTurns([])}>Clear chat</button></div>
+                <p className="ai-note">Review selected code before sending. Do not include passwords or secrets. No files are read automatically. AI answers can be wrong; code is not executed. First responses may take time on an 8 GB PC.</p>
+              </div>
+              <div className="ai-conversation" aria-live="polite">
+                <div className="ai-convo-head"><strong>Conversation</strong><small>In-memory only · Cleared on reload</small></div>
+                {!aiTurns.length && <div className="ai-empty"><div>✦</div><h3>Your coding mentor is ready.</h3><p>Select a local model, choose a mode and ask your first question. No cloud account or API key is needed.</p></div>}
+                {aiTurns.map((turn, index) => <article className={`ai-turn ${turn.role}`} key={index}><div className="ai-turn-top"><strong>{turn.role === 'user' ? 'You' : 'Syntax-Sensei'}</strong><small>{turn.role === 'user' ? aiModes.find(m => m.value === turn.mode)?.label : turn.model}</small></div><pre>{turn.content}</pre></article>)}
+                {aiBusy && <div className="ai-pending"><div className="spinner"></div> Local model is generating a response. This can take longer on the first request.</div>}
+              </div>
+            </div>
           </>}
           {page === 'learn' && <>
             <div className="eyebrow">PYTHON LEARNING PREVIEW</div><h1>Small steps. Real progress<span className="dot">.</span></h1>
@@ -116,9 +221,9 @@ function App() {
             <div className="progress-card"><div className="progress-top"><div><span>PYTHON FOUNDATION PREVIEW</span><h2>{percent}% complete</h2></div><strong>{progress?.completed_count ?? 0} / {progress?.total_lessons ?? 0}</strong></div><div className="meter large"><div style={{width: `${percent}%`}}/></div>{data.lessons.map((lesson, index) => <div className="progress-line" key={lesson.id}><span>{String(index+1).padStart(2,'0')}</span><strong>{lesson.title}</strong><b className={progress && isLessonComplete(progress,lesson.id) ? 'done-text' : ''}>{progress && isLessonComplete(progress,lesson.id) ? 'Completed' : 'Not started'}</b></div>)}</div>
             <button className="secondary" onClick={() => setPage('learn')}>Continue learning →</button>
           </>}
-          {page === 'roadmap' && <><div className="eyebrow">OUR DEVELOPMENT JOURNEY</div><h1>Built carefully, phase by phase<span className="dot">.</span></h1><p className="lead">Features are clearly labeled by delivery status so you always know what actually works.</p><div className="roadmap-list"><div className="roadmap-item ready"><span>01</span><div><strong>Extension + API + SQLite</strong><p>Development foundation, learning preview, progress persistence</p></div><b>THIS PHASE</b></div>{planned.map((f,i)=><div className="roadmap-item" key={f.title}><span>{String(i+2).padStart(2,'0')}</span><div><strong>{f.title}</strong><p>{f.desc}</p></div><b>PLANNED</b></div>)}</div></>}
+          {page === 'roadmap' && <><div className="eyebrow">OUR DEVELOPMENT JOURNEY</div><h1>Built carefully, phase by phase<span className="dot">.</span></h1><p className="lead">Features are clearly labeled by delivery status so you always know what actually works.</p><div className="roadmap-list"><div className="roadmap-item ready"><span>01</span><div><strong>Extension + API + SQLite</strong><p>Development foundation, learning preview, progress persistence</p></div><b>PHASE 1 · DONE</b></div><div className="roadmap-item ready"><span>02</span><div><strong>Offline Ollama AI Integration</strong><p>Local AI chat, model switching, code explanations, debugging hints</p></div><b>THIS PHASE</b></div>{planned.map((f,i)=><div className="roadmap-item" key={f.title}><span>{String(i+3).padStart(2,'0')}</span><div><strong>{f.title}</strong><p>{f.desc}</p></div><b>PLANNED</b></div>)}</div></>}
         </>}
-        <footer className="footer"><span>SYNTAX-SENSEI / v0.1.0</span><span>Private by design · No cloud connection in Phase 1</span></footer>
+        <footer className="footer"><span>SYNTAX-SENSEI / v0.2.0</span><span>Ollama local-only · AI chat not saved to SQLite</span></footer>
       </main>
     </div>
   </div>;
