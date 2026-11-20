@@ -23,9 +23,9 @@ def test_bootstrap_has_preview_lessons_and_feature_flags(client):
     response = client.get("/api/bootstrap")
     assert response.status_code == 200
     data = response.json()
-    assert data["phase"] == 1
+    assert data["phase"] == 2
     assert len(data["lessons"]) == 3
-    assert data["features"]["ai_chat"] == "planned_phase_2"
+    assert data["features"]["ai_chat"] == "available_local_ollama"
     assert data["progress"]["completed_count"] == 0
 
 

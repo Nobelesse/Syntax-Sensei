@@ -1,7 +1,9 @@
 import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import MarkdownAnswer from './MarkdownAnswer';
 import { completionPercentage, isLessonComplete, type Bootstrap, type Progress, type Lesson } from './progress';
 import './style.css';
+import './answer-styles.css';
 
 type Page = 'dashboard' | 'ai' | 'learn' | 'progress' | 'roadmap';
 type AiMode = 'chat' | 'explain' | 'debug' | 'hint';
@@ -203,7 +205,7 @@ function App() {
               <div className="ai-conversation" aria-live="polite">
                 <div className="ai-convo-head"><strong>Conversation</strong><small>In-memory only · Cleared on reload</small></div>
                 {!aiTurns.length && <div className="ai-empty"><div>✦</div><h3>Your coding mentor is ready.</h3><p>Select a local model, choose a mode and ask your first question. No cloud account or API key is needed.</p></div>}
-                {aiTurns.map((turn, index) => <article className={`ai-turn ${turn.role}`} key={index}><div className="ai-turn-top"><strong>{turn.role === 'user' ? 'You' : 'Syntax-Sensei'}</strong><small>{turn.role === 'user' ? aiModes.find(m => m.value === turn.mode)?.label : turn.model}</small></div><pre>{turn.content}</pre></article>)}
+                {aiTurns.map((turn, index) => <article className={`ai-turn ${turn.role}`} key={index}><div className="ai-turn-top"><strong>{turn.role === 'user' ? 'You' : 'Syntax-Sensei'}</strong><small>{turn.role === 'user' ? aiModes.find(m => m.value === turn.mode)?.label : turn.model}</small></div>{turn.role === 'assistant' ? <MarkdownAnswer content={turn.content} /> : <div className="ai-user-text">{turn.content}</div>}</article>)}
                 {aiBusy && <div className="ai-pending"><div className="spinner"></div> Local model is generating a response. This can take longer on the first request.</div>}
               </div>
             </div>

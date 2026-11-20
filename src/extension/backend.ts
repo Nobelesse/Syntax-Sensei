@@ -119,7 +119,7 @@ export class BackendManager implements vscode.Disposable {
     throw new Error('Local backend did not become ready. Verify backend dependencies and see Output > Syntax-Sensei.');
   }
 
-  private async requestRaw(route: string, method: 'GET' | 'POST', body?: object): Promise<unknown> {
+  private async requestRaw(route: string, method: 'GET' | 'POST', body?: object, timeoutMs = 4000): Promise<unknown> {
     if (!this.port) {
       throw new Error('Backend has not started.');
     }
@@ -127,7 +127,7 @@ export class BackendManager implements vscode.Disposable {
     const port = this.port;
     return new Promise((resolve, reject) => {
       const req = http.request({
-        hostname: '127.0.0.1', port, path: route, method, timeout: 4000,
+        hostname: '127.0.0.1', port, path: route, method, timeout: timeoutMs,
         headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}
       }, response => {
         const chunks: Buffer[] = [];
@@ -174,6 +174,16 @@ export class BackendManager implements vscode.Disposable {
       throw new Error('Invalid lesson ID.');
     }
     return this.requestRaw(`/api/lessons/${lessonId}/progress`, 'POST', { completed });
+  }
+
+  async ollamaStatus(): Promise<unknown> {
+    await this.ensureRunning();
+    return this.requestRaw('/api/ai/status', 'GET', undefined, 7000);
+  }
+
+  async aiChat(payload: object): Promise<unknown> {
+    await this.ensureRunning();
+    return this.requestRaw('/api/ai/chat', 'POST', payload, 190000);
   }
 
   async checkHealth(): Promise<unknown> {

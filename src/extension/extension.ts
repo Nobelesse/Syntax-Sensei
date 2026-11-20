@@ -14,6 +14,7 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.commands.registerCommand('syntaxSensei.openDashboard', () => panel.openDashboard()),
+    vscode.commands.registerCommand('syntaxSensei.explainSelection', () => panel.explainSelectedCode()),
     vscode.commands.registerCommand('syntaxSensei.checkConnection', async () => {
       try {
         const health = await backend.checkHealth() as { version?: string };
@@ -25,7 +26,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
-  output.appendLine('Syntax-Sensei Phase 1 extension activated.');
+  output.appendLine('Syntax-Sensei Phase 2 extension activated.');
 }
 
 export function deactivate(): void {

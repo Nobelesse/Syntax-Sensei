@@ -1,8 +1,8 @@
 {
   "name": "syntax-sensei",
   "displayName": "Syntax-Sensei",
-  "description": "Offline-first AI coding mentor and programming academy — Phase 1 foundation",
-  "version": "0.1.4",
+  "description": "Offline AI coding mentor and programming academy for VS Code — Phase 2",
+  "version": "0.2.1",
   "publisher": "nobelesse",
   "license": "UNLICENSED",
   "private": true,
@@ -17,7 +17,8 @@
   "activationEvents": [
     "onView:syntaxSensei.sidebar",
     "onCommand:syntaxSensei.openDashboard",
-    "onCommand:syntaxSensei.checkConnection"
+    "onCommand:syntaxSensei.checkConnection",
+    "onCommand:syntaxSensei.explainSelection"
   ],
   "contributes": {
     "commands": [
@@ -29,6 +30,11 @@
       {
         "command": "syntaxSensei.checkConnection",
         "title": "Syntax-Sensei: Check Backend Connection",
+        "category": "Syntax-Sensei"
+      },
+      {
+        "command": "syntaxSensei.explainSelection",
+        "title": "Syntax-Sensei: Explain Selected Code",
         "category": "Syntax-Sensei"
       }
     ],
@@ -59,6 +65,15 @@
           "description": "Optional absolute path to the Python interpreter containing FastAPI and Uvicorn. Leave empty to use the project .venv."
         }
       }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "syntaxSensei.explainSelection",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        }
+      ]
     }
   },
   "scripts": {
@@ -73,7 +88,9 @@
   },
   "dependencies": {
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@types/node": "22.13.4",

@@ -7,11 +7,19 @@ interface WebviewRequest {
   type?: string;
   lessonId?: string;
   completed?: boolean;
+  requestId?: string;
+  payload?: unknown;
+}
+
+interface EditorSelection {
+  code: string;
+  language: string;
 }
 
 export class SenseiPanel implements vscode.WebviewViewProvider {
   static readonly viewId = 'syntaxSensei.sidebar';
   private panel: vscode.WebviewPanel | undefined;
+  private selectedCode: EditorSelection | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -28,13 +36,34 @@ export class SenseiPanel implements vscode.WebviewViewProvider {
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      'syntaxSensei.dashboard', 'Syntax-Sensei • Learning Dashboard', vscode.ViewColumn.One,
+      'syntaxSensei.dashboard', 'Syntax-Sensei • AI Coding Mentor', vscode.ViewColumn.One,
       { enableScripts: true, retainContextWhenHidden: true,
         localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview')] }
     );
     this.panel = panel;
     this.configure(panel.webview);
     panel.onDidDispose(() => { this.panel = undefined; });
+  }
+
+  explainSelectedCode(): void {
+    const editor = vscode.window.activeTextEditor;
+    const text = editor?.document.getText(editor.selection) ?? '';
+    if (!text.trim()) {
+      void vscode.window.showInformationMessage('Select code in the editor first, then run Syntax-Sensei: Explain Selected Code.');
+      return;
+    }
+    if (text.length > 12000) {
+      void vscode.window.showWarningMessage('Selection is longer than 12,000 characters. Select a smaller code sample.');
+      return;
+    }
+    this.selectedCode = { code: text, language: editor!.document.languageId };
+    const alreadyOpen = Boolean(this.panel);
+    this.openDashboard();
+    if (alreadyOpen && this.panel) {
+      // Existing panels are initialized; new panels receive the selection after bootstrap.
+      void this.panel.webview.postMessage({ type: 'editorSelection', data: this.selectedCode });
+      this.selectedCode = undefined;
+    }
   }
 
   private configure(webview: vscode.Webview): void {
@@ -49,26 +78,40 @@ export class SenseiPanel implements vscode.WebviewViewProvider {
   }
 
   private async handleMessage(webview: vscode.Webview, incoming: unknown): Promise<void> {
-    if (!incoming || typeof incoming !== 'object') {
-      return;
-    }
+    if (!incoming || typeof incoming !== 'object') return;
     const message = incoming as WebviewRequest;
+    const requestId = typeof message.requestId === 'string' && /^[a-zA-Z0-9_-]{1,40}$/.test(message.requestId)
+      ? message.requestId : undefined;
     try {
       if (message.type === 'bootstrap') {
         const data = await this.backend.getBootstrap();
         await webview.postMessage({ type: 'bootstrap', data });
+        if (this.panel?.webview === webview && this.selectedCode) {
+          await webview.postMessage({ type: 'editorSelection', data: this.selectedCode });
+          this.selectedCode = undefined;
+        }
       } else if (message.type === 'updateProgress') {
         if (typeof message.lessonId !== 'string' || typeof message.completed !== 'boolean') {
           throw new Error('Malformed progress request.');
         }
         const data = await this.backend.updateProgress(message.lessonId, message.completed);
         await webview.postMessage({ type: 'progress', data });
+      } else if (message.type === 'aiStatus') {
+        const data = await this.backend.ollamaStatus();
+        await webview.postMessage({ type: 'aiStatus', data });
+      } else if (message.type === 'aiChat') {
+        if (!message.payload || typeof message.payload !== 'object' || Array.isArray(message.payload)) {
+          throw new Error('Malformed AI request.');
+        }
+        const data = await this.backend.aiChat(message.payload);
+        await webview.postMessage({ type: 'aiResponse', data, requestId });
       } else if (message.type === 'openDashboard') {
         this.openDashboard();
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      await webview.postMessage({ type: 'error', message: reason });
+      const type = message.type === 'aiChat' || message.type === 'aiStatus' ? 'aiError' : 'error';
+      await webview.postMessage({ type, message: reason, requestId });
     }
   }
 
